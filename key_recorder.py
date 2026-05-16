@@ -1,6 +1,7 @@
 import os
 import sys
-from pynput import keyboard
+import tty
+import termios
 
 # Define the log file location
 LOG_FILE = "key_log.txt"
@@ -14,7 +15,7 @@ BANNER = r"""
 ╚██████╗   ██║   ██████╔╝███████╗██║  ██║
  ╚═════╝   ╚═╝   ╚═════╝ ╚══════╝╚═╝  ╚═╝
          M R .   M E R C E R
-   >> Local Input Event Monitor v1.0 <<
+   >> WSL Terminal Event Monitor v2.0 <<
 """
 
 print(BANNER)
@@ -23,49 +24,53 @@ print(f"[*] Recording started. Saving inputs to: {os.path.abspath(LOG_FILE)}")
 print("[*] Exit Hotkey: Press 'Ctrl + X' to safely terminate.")
 print("==================================================\n")
 
-def on_press(key):
-    """Callback function triggered whenever a key is pressed."""
-    try:
-        # Check for standard alphanumeric character inputs
-        current_key = key.char
-        
-        # WSL/Terminal Hotkey Hook: 'Ctrl + X' registers as the hex code '\x18'
-        # 'Ctrl + C' registers as '\x03'
-        if current_key in ['\x18', '\x03']:
-            print("\n\n[-] Termination hotkey detected. Exiting engine cleanly...")
-            return False  # Returning False completely kills the pynput listener loop
-            
-    except AttributeError:
-        # Fallback dictionary for common special/functional layout keys
-        special_keys = {
-            keyboard.Key.space: " [SPACE] ",
-            keyboard.Key.enter: "\n[ENTER]\n",
-            keyboard.Key.backspace: " [BACKSPACE] ",
-            keyboard.Key.tab: " [TAB] "
-        }
-        
-        # Use mapped string if known, otherwise output the clean key name
-        current_key = special_keys.get(key, f" [{str(key).replace('Key.', '').upper()}] ")
-
-    # Output to local terminal for immediate UI verification
-    print(current_key, end="", flush=True)
-
-    # Append character cleanly to the local logging file
-    try:
-        with open(LOG_FILE, "a", encoding="utf-8") as f:
-            f.write(current_key)
-    except IOError as e:
-        print(f"\n[!] Storage Error writing to log: {e}")
-
 def main():
+    # Save original terminal settings to restore them later
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    
+    print("[*] Monitoring active. Start typing below:\n")
+    
     try:
-        # Initialize the hardware monitoring thread structure
-        with keyboard.Listener(on_press=on_press) as listener:
-            listener.join()
-    except KeyboardInterrupt:
-        print("\n\n[-] Terminal Interrupted (Ctrl+C caught). Clean cleanup completed.")
+        # Switch terminal to raw mode so it catches keys character-by-character
+        tty.setraw(sys.stdin.fileno())
+        
+        while True:
+            # Read 1 character from standard input buffer
+            char = sys.stdin.read(1)
+            
+            # Hotkey Detection:
+            # '\x18' is Ctrl+X. '\x03' is Ctrl+C.
+            if char in ['\x18', '\x03']:
+                break
+                
+            # Format the output visually
+            display_key = char
+            if char == ' ':
+                display_key = " [SPACE] "
+            elif char in ['\r', '\n']:
+                display_key = "\n[ENTER]\n"
+            elif char in ['\x7f', '\x08']:
+                display_key = " [BACKSPACE] "
+            elif char == '\t':
+                display_key = " [TAB] "
+                
+            # 1. Print immediately to terminal screen
+            # (We use sys.stdout because print() behaves differently in raw mode)
+            sys.stdout.write(display_key)
+            sys.stdout.flush()
+            
+            # 2. Write and force flush directly to key_log.txt instantly
+            with open(LOG_FILE, "a", encoding="utf-8") as f:
+                f.write(display_key)
+                f.flush()
+                os.fsync(f.fileno())
+                
     finally:
-        print("[*] Recording session closed successfully.")
+        # CRITICAL: Restore terminal settings back to normal
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+        print("\n\n[-] Termination hook triggered.")
+        print("[*] Session closed cleanly. Data flushed to disk.")
 
 if __name__ == "__main__":
     main()
